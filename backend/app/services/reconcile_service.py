@@ -7,9 +7,11 @@ from typing import Any
 from app.config import FIXTURES_DIR
 from app.db import connect
 from app.engines.reconcile import compare_sides
+from app.modules.diff_ticket import DispositionStatus, STATUS_LABELS
 from app.repositories import batches as batch_repo
 from app.repositories import contracts as contract_repo
 from app.repositories import pairs as pair_repo
+from app.repositories import side_snapshots as snap_repo
 from app.repositories import tickets as ticket_repo
 
 
@@ -37,7 +39,10 @@ def dashboard_stats() -> dict[str, Any]:
             "batch_count": conn.execute("SELECT COUNT(*) c FROM reconcile_batches").fetchone()["c"],
             "diff_count": conn.execute("SELECT COUNT(*) c FROM reconcile_diffs").fetchone()["c"],
             "open_dispositions": conn.execute(
-                "SELECT COUNT(*) c FROM diff_tickets WHERE status='open'"
+                "SELECT COUNT(*) c FROM diff_tickets WHERE status != 'closed'"
+            ).fetchone()["c"],
+            "closed_dispositions": conn.execute(
+                "SELECT COUNT(*) c FROM diff_tickets WHERE status='closed'"
             ).fetchone()["c"],
             "policy": conn.execute(
                 "SELECT value FROM settings WHERE key='default_policy'"
@@ -72,18 +77,33 @@ def list_batches(limit: int = 50) -> list[dict[str, Any]]:
 def list_diffs(batch_id: int | None = None, pair_id: int | None = None) -> list[dict[str, Any]]:
     conn = connect()
     try:
-        return batch_repo.list_diffs(conn, batch_id=batch_id, pair_id=pair_id)
+        diffs = batch_repo.list_diffs(conn, batch_id=batch_id, pair_id=pair_id)
+        tickets = {t["diff_id"]: t for t in ticket_repo.list_tickets(conn)}
+        for d in diffs:
+            t = tickets.get(d["id"])
+            if t is None:
+                d["disposition"] = None
+                d["disposition_state"] = "undisposed"
+            else:
+                d["disposition"] = {
+                    "ticket_id": t["id"],
+                    "status": t["status"],
+                    "status_label": STATUS_LABELS.get(t["status"], t["status"]),
+                    "assignee": t["assignee"],
+                }
+                d["disposition_state"] = (
+                    "closed" if t["status"] == DispositionStatus.CLOSED.value else "open"
+                )
+        return diffs
     finally:
         conn.close()
 
 
 def list_dispositions() -> list[dict[str, Any]]:
     """Difference disposition records (not a customer-service ticket desk)."""
-    conn = connect()
-    try:
-        return ticket_repo.list_tickets(conn)
-    finally:
-        conn.close()
+    from app.services import disposition_service
+
+    return disposition_service.list_dispositions()
 
 
 def list_contracts() -> list[dict[str, Any]]:
@@ -113,8 +133,25 @@ def run_reconcile(pair_id: int, note: str | None = None) -> dict[str, Any]:
         if not pair["enabled"]:
             raise ValueError("pair disabled")
 
-        left_rows = _load_fixture(pair["left_fixture"])
-        right_rows = _load_fixture(pair["right_fixture"])
+        # Fixtures are the immutable baseline extract; reinject writes live in
+        # side_snapshots and are overlaid here so the next run reconciles the
+        # actually-corrected sides (never overwrite the fixture files).
+        baseline_left = _load_fixture(pair["left_fixture"])
+        baseline_right = _load_fixture(pair["right_fixture"])
+        left_rows = snap_repo.overlay_rows(
+            conn,
+            pair_id=pair_id,
+            side="left",
+            baseline=baseline_left,
+            align_keys=pair["align_keys"],
+        )
+        right_rows = snap_repo.overlay_rows(
+            conn,
+            pair_id=pair_id,
+            side="right",
+            baseline=baseline_right,
+            align_keys=pair["align_keys"],
+        )
         result = compare_sides(
             left_rows,
             right_rows,

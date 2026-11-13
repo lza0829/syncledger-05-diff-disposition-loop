@@ -80,6 +80,21 @@ th, td { text-align: left; padding: 0.45rem 0.35rem; border-bottom: 1px solid va
 .tag.ok { background: #d4ebe2; color: var(--ok); }
 .tag.danger { background: #f0d6d6; color: var(--danger); }
 .tag.warn { background: #f1e4c5; color: var(--warn); }
+.tag.info { background: #dce6f2; color: var(--accent-2); }
+.tag.muted-tag { background: #e3e8ed; color: var(--muted); }
+.row-ok { background: rgba(29, 107, 79, 0.07); }
+.row-open { background: rgba(154, 107, 31, 0.06); }
+button.ghost { background: #5a6a7d; }
+button.danger-btn { background: var(--danger); }
+button + button { margin-left: 0.4rem; }
+.detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+@media (max-width: 1100px) { .detail-grid { grid-template-columns: 1fr; } }
+.kv { font-size: 0.86rem; }
+.kv b { color: var(--muted); font-weight: 550; margin-right: 0.3rem; }
+.form-row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: flex-end; margin: 0.4rem 0; }
+.form-row label { font-size: 0.85rem; color: var(--muted); }
+.form-row input, .form-row select { display: block; margin-top: 0.2rem; min-width: 10rem; }
+textarea { width: 100%; min-height: 3.2rem; margin-top: 0.25rem; }
 button {
   background: var(--accent);
   color: #fff;

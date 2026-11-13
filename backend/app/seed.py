@@ -54,6 +54,21 @@ CONTRACT_SEEDS = [
 ]
 
 
+def _migrate_legacy_schema(conn) -> None:
+    """Idempotent ALTERs for databases created before the disposition cut."""
+    ticket_cols = {r["name"] for r in conn.execute("PRAGMA table_info(diff_tickets)")}
+    if "last_fail_reason" not in ticket_cols:
+        conn.execute("ALTER TABLE diff_tickets ADD COLUMN last_fail_reason TEXT")
+    if "closed_at" not in ticket_cols:
+        conn.execute("ALTER TABLE diff_tickets ADD COLUMN closed_at TEXT")
+    # The base build seeded 'open' as placeholder status; map it onto the
+    # new state machine so old rows never sit on an unknown status.
+    conn.execute(
+        "UPDATE diff_tickets SET status='pending_claim' WHERE status NOT IN "
+        "('pending_claim','in_progress','pending_review','closed')"
+    )
+
+
 def init_db() -> None:
     conn = connect()
     try:
@@ -106,15 +121,53 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS diff_tickets(
                 id INTEGER PRIMARY KEY,
                 pair_id INTEGER,
-                diff_id INTEGER,
+                diff_id INTEGER NOT NULL UNIQUE,
                 title TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'open',
+                status TEXT NOT NULL DEFAULT 'pending_claim',
                 assignee TEXT,
                 note TEXT,
+                last_fail_reason TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
+                closed_at TEXT,
                 FOREIGN KEY(pair_id) REFERENCES reconcile_pairs(id),
                 FOREIGN KEY(diff_id) REFERENCES reconcile_diffs(id)
+            );
+            CREATE TABLE IF NOT EXISTS disposition_events(
+                id INTEGER PRIMARY KEY,
+                ticket_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                from_status TEXT,
+                to_status TEXT,
+                actor TEXT,
+                detail TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(ticket_id) REFERENCES diff_tickets(id)
+            );
+            CREATE TABLE IF NOT EXISTS reinject_records(
+                id INTEGER PRIMARY KEY,
+                ticket_id INTEGER NOT NULL,
+                diff_id INTEGER NOT NULL,
+                side TEXT NOT NULL,
+                target_key_json TEXT NOT NULL,
+                old_values_json TEXT NOT NULL,
+                new_values_json TEXT NOT NULL,
+                result TEXT NOT NULL,
+                fail_reason TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(ticket_id) REFERENCES diff_tickets(id),
+                FOREIGN KEY(diff_id) REFERENCES reconcile_diffs(id)
+            );
+            CREATE TABLE IF NOT EXISTS side_snapshots(
+                id INTEGER PRIMARY KEY,
+                pair_id INTEGER NOT NULL,
+                side TEXT NOT NULL,
+                align_key_json TEXT NOT NULL,
+                row_json TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'reinject',
+                updated_at TEXT NOT NULL,
+                UNIQUE(pair_id, side, align_key_json),
+                FOREIGN KEY(pair_id) REFERENCES reconcile_pairs(id)
             );
             CREATE TABLE IF NOT EXISTS endpoint_contracts(
                 id INTEGER PRIMARY KEY,
@@ -130,6 +183,7 @@ def init_db() -> None:
             );
             """
         )
+        _migrate_legacy_schema(conn)
         if conn.execute("SELECT COUNT(*) c FROM reconcile_pairs").fetchone()["c"] == 0:
             from datetime import datetime, timezone
 
